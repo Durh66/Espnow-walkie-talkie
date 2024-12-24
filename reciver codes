@@ -1,0 +1,84 @@
+#include <esp_now.h>
+#include <WiFi.h>
+
+// Pin Definitions
+#define DAC_PIN 25
+#define LED_RECEIVE 2
+#define PACKET_SIZE 100
+
+// Audio processing constants
+#define AUDIO_BIAS 1800  // Center the audio around the midpoint
+#define MIN_THRESHOLD 100 // Minimum amplitude to consider as audio
+
+typedef struct audio_packet {
+    uint16_t samples[PACKET_SIZE];
+} audio_packet;
+
+audio_packet audioData;
+bool isReceiving = false;
+unsigned long lastReceiveTime = 0;
+
+// Callback function
+void OnDataRecv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int data_len) {
+    digitalWrite(LED_RECEIVE, HIGH);
+    lastReceiveTime = millis();
+    isReceiving = true;
+
+    if (data_len == sizeof(audio_packet)) {
+        memcpy(&audioData, data, sizeof(audio_packet));
+
+        // Process and output audio
+        for (int i = 0; i < PACKET_SIZE; i++) {
+            // Apply DC bias and scaling
+            int16_t centered = audioData.samples[i] - 2048;  // Center around zero
+            int16_t amplified = centered * 2;  // Amplify the signal
+            
+            // Convert to DAC range (0-255) with bias
+            uint8_t dacValue = constrain(map(amplified, -2048, 2048, 0, 255), 0, 255);
+
+            if (i % 20 == 0) {
+                Serial.print("In: ");
+                Serial.print(audioData.samples[i]);
+                Serial.print(" Centered: ");
+                Serial.print(centered);
+                Serial.print(" Out: ");
+                Serial.println(dacValue);
+            }
+
+            dacWrite(DAC_PIN, dacValue);
+            delayMicroseconds(125);  // Keep timing consistent
+        }
+    }
+    digitalWrite(LED_RECEIVE, LOW);
+}
+
+void setup() {
+    Serial.begin(115200);
+    pinMode(LED_RECEIVE, OUTPUT);
+
+    // Initialize DAC
+    dacWrite(DAC_PIN, 128);  // Set initial bias point
+    
+    WiFi.mode(WIFI_STA);
+    Serial.print("Receiver MAC: ");
+    Serial.println(WiFi.macAddress());
+
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("ESP-NOW init failed");
+        return;
+    }
+
+    esp_now_register_recv_cb(OnDataRecv);
+    Serial.println("Receiver Ready");
+}
+
+void loop() {
+    if (isReceiving && (millis() - lastReceiveTime > 1000)) {
+        isReceiving = false;
+        Serial.println("Reception stopped");
+        dacWrite(DAC_PIN, 128);  // Reset DAC to midpoint when not receiving
+    }
+    delay(10);
+
+
+
